@@ -1,0 +1,6 @@
+[package]
+name = "TP2"
+version = "0.1.0"
+authors = ["Bruno Liberini <bliberini@gmail.com>"]
+
+[dependencies]
