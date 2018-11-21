@@ -126,14 +126,16 @@ impl NetworkInterface {
  */
 
 struct Server {
+  id: u32,
   host: Host,
   processing_power: u64
 }
 
 impl Server {
 
-  fn new(server_data: ServerData) -> Server {
+  fn new(id: u32, server_data: ServerData) -> Server {
     Server {
+      id: id,
       host: Host::new(),
       processing_power: server_data.get_processing_power()
     }
@@ -144,6 +146,8 @@ impl Server {
   }
 
   fn run(self) {
+    println!("[S{}] Ejecutando servidor {}", self.id, self.id);
+
     let rx = self.host.nic.r;
     let tx = self.host.nic.s;
 
@@ -151,6 +155,8 @@ impl Server {
 
        // Obtenemos la cantidad de cuadrantes a procesar.
        let workload = message.workload;
+
+       println!("[S{}] Recibidas {} unidades de trabajo", self.id, workload);
 
        /*
         * Procesamos los cuadrantes.
@@ -170,7 +176,11 @@ impl Server {
         */
        let sleep_time = (1000*workload)/self.processing_power;
        let sleep_time_scaled = ((sleep_time as f64)/GLOBAL_SPEED) as u64;
+
+       println!("[S{}] Tiempo estimado: {}ms (s: {}ms)", self.id, sleep_time, sleep_time_scaled);
        thread::sleep(time::Duration::from_millis(sleep_time_scaled));
+
+       println!("[S{}] Procesamiento terminado; devolviendo ACK", self.id);
 
        // Devolvemos el ACK.
        let response = Packet::answer_me_at(&tx, 0);
@@ -191,6 +201,7 @@ struct Target {
 }
 
 struct Client {
+  id: u32,
   host: Host,
   distribution_scheme: Vec<Target>,
   work_generation_rate: u64
@@ -198,7 +209,7 @@ struct Client {
 
 impl Client {
 
-  fn new(servers: &Vec<Server>, client_data: ClientData) -> Client {
+  fn new(id: u32, servers: &Vec<Server>, client_data: ClientData) -> Client {
     let workshare: &Vec<f64> = client_data.get_workshare();
     let mut distribution = Vec::new();
 
@@ -210,6 +221,7 @@ impl Client {
     }
 
     Client {
+      id: id,
       host: Host::new(),
       distribution_scheme: distribution,
       work_generation_rate: client_data.get_work_generation_rate()
@@ -217,6 +229,8 @@ impl Client {
   }
 
   fn run(self) {
+    println!("[C{}] Ejecutando cliente {}", self.id, self.id);
+
     /*
      * Cada cierta cantidad de tiempo, el observatorio genera x cuadrantes.
      * A partir de ahí itera por la lista de servidores distribuyendo los
@@ -234,24 +248,42 @@ impl Client {
      * cada servidor.
      */
 
-     let targets = &self.distribution_scheme;
+    let targets = &self.distribution_scheme;
 
-     loop {
-       // TODO: Generar x cuadrantes.
-       let x = self.work_generation_rate;
+    loop {
+      let x = self.work_generation_rate;
 
-       // Distribuimos los x cuadrantes generados.
-       for target in targets {
-         let workload = ((x as f64)*(target.weight)) as u64;
-         let packet = Packet::from_iface(&self.host.nic, workload);
-         target.virtual_link.send_through(packet);
-       }
+      println!("[C{}] Generando {} unidades de trabajo", self.id, x);
 
-       // Esperamos la respuesta de cada servidor.
-       for _d in targets {
-         let _response = self.host.nic.read();
-       }
-     }
+      // Distribuimos los x cuadrantes generados.
+      let mut sid = 0;
+
+      for target in targets {
+        sid += 1;
+
+        let workload = ((x as f64)*(target.weight)) as u64;
+        let packet = Packet::from_iface(&self.host.nic, workload);
+
+        println!("[C{}] Enviando {} unidades al servidor {}", self.id, workload, sid);
+        target.virtual_link.send_through(packet);
+      }
+
+      // Esperamos la respuesta de cada servidor.
+      println!("[C{}] Esperando respuestas", self.id);
+      for _d in targets {
+        let _response = self.host.nic.read();
+      }
+
+      println!("[C{}] Todos los servidores terminaron de procesar el bache", self.id);
+
+      /* TODO: Ajustar para dormir hasta completar una cierta cantidad;
+       * el tiempo a dormir dependerá del tiempo de respuesta.
+       *
+       */
+      let sleep_time = (3000.0/GLOBAL_SPEED) as u64;
+      thread::sleep(time::Duration::from_millis(sleep_time));
+
+    }
   }
 
 }
@@ -271,6 +303,8 @@ fn main() {
    *
    *     configuration.get("clave") // retorna el valor asociado a "clave".
    */
+
+  println!("[T0] Cargando configuración");
   let mut configuration = configuration::Configuration::new();
   configuration.load();
 
@@ -278,20 +312,25 @@ fn main() {
   let mut servers: Vec<Server> = Vec::new();
   let mut clients: Vec<Client> = Vec::new();
 
-  // Inicializamos los servidores.
+  println!("[T0] Inicializando servidores");
   let server_data: Vec<ServerData> = configuration.get_server_dataset();
+  let mut server_count = 0;
 
   for d in server_data {
-    servers.push(Server::new(d));
+    server_count += 1;
+    servers.push(Server::new(server_count, d));
   }
 
-  // Inicializamos los clientes.
+  println!("[T0] Inicializando clientes");
   let client_data: Vec<ClientData> = configuration.get_client_dataset();
+  let mut client_count = 0;
 
   for c in client_data {
-    clients.push(Client::new(&servers, c));
+    client_count += 1;
+    clients.push(Client::new(client_count, &servers, c));
   }
 
+  println!("[T0] Lanzando hilos servidores");
   for server in servers {
     let th = thread::spawn(move || {
       server.run();
@@ -299,6 +338,7 @@ fn main() {
     threads.push(th);
   }
 
+  println!("[T0] Lanzando hilos clientes");
   for client in clients {
     let th = thread::spawn(move || {
       client.run();
@@ -306,6 +346,7 @@ fn main() {
     threads.push(th);
   }
 
+  println!("[T0] Esperando la finalización del programa");
   for th in threads {
     th.join().unwrap();
   }
