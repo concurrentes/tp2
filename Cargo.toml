@@ -4,3 +4,8 @@ version = "0.1.0"
 authors = ["Bruno Liberini <bliberini@gmail.com>"]
 
 [dependencies]
+log = "0.4.6"
+env_logger = "0.6.0"
+chrono = "0.4.6"
+libc = "0.2.44"
+fern = "0.5"

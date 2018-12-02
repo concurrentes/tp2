@@ -1,10 +1,63 @@
+#[macro_use]
+extern crate log;
+extern crate fern;
+/*
+extern crate log;
+extern crate env_logger;
+*/
+extern crate chrono;
+extern crate libc;
+
 mod configuration;
 use configuration::ServerData;
 use configuration::ClientData;
+/*
+use log::{Record, Level, Metadata, LevelFilter};
+use env_logger::{Builder};
+*/
 
 use std::sync::mpsc;
 use std::thread;
 use std::time;
+use std::env;
+
+/*==============================================================================
+ * Loggers
+ *------------------------------------------------------------------------------
+ *
+ */
+
+fn setup_terminal_logging() -> Result<(), fern::InitError> {
+  fern::Dispatch::new()
+      .format(|out, message, record| unsafe {
+        out.finish(format_args!(
+          "{}[{}] {}",
+          chrono::Local::now().format("[%Y-%m-%d][%H:%M:%S]"),
+          libc::pthread_self(),
+          message
+        ))
+      })
+      .level(log::LevelFilter::Info)
+      .chain(std::io::stdout())
+      .apply()?;
+  Ok(())
+}
+
+fn setup_file_logging() -> Result<(), fern::InitError> {
+  fern::Dispatch::new()
+      .format(|out, message, record| unsafe {
+        out.finish(format_args!(
+          "{}[{}] {}",
+          chrono::Local::now().format("[%Y-%m-%d][%H:%M:%S]"),
+          libc::pthread_self(),
+          message
+        ))
+      })
+      .level(log::LevelFilter::Info)
+      .chain(fern::log_file("output.log")?)
+      .apply()?;
+  Ok(())
+}
 
 /*==============================================================================
  * Packet
@@ -14,22 +67,25 @@ use std::time;
 
 struct Packet {
   from: VirtualLink,
-  workload: u64
+  workload: u64,
+  origin: u32,
 }
 
 impl Packet {
 
-  fn from_iface(iface: &NetworkInterface, workload: u64) -> Packet {
+  fn from_iface(iface: &NetworkInterface, workload: u64, origin: u32) -> Packet {
     Packet {
       from: (*iface).get_virtual_link(),
-      workload: workload
+      workload: workload,
+      origin: origin,
     }
   }
 
-  fn answer_me_at(tx: &mpsc::Sender<Packet>, workload: u64) -> Packet {
+  fn answer_me_at(tx: &mpsc::Sender<Packet>, workload: u64, origin: u32) -> Packet {
     Packet {
       from: VirtualLink::linked_to(tx),
-      workload: workload
+      workload: workload,
+      origin: origin,
     }
   }
 
@@ -146,7 +202,7 @@ impl Server {
   }
 
   fn run(self) {
-    println!("[S{}] Ejecutando servidor {}", self.id, self.id);
+    info!("[S{}] Ejecutando servidor {}", self.id, self.id);
 
     let rx = self.host.nic.r;
     let tx = self.host.nic.s;
@@ -156,7 +212,7 @@ impl Server {
        // Obtenemos la cantidad de cuadrantes a procesar.
        let workload = message.workload;
 
-       println!("[S{}] Recibidas {} unidades de trabajo", self.id, workload);
+       info!("[S{}] Recibidas {} unidades de trabajo desde observatorio {}", self.id, workload, message.origin);
 
        /*
         * Procesamos los cuadrantes.
@@ -177,13 +233,13 @@ impl Server {
        let sleep_time = (1000*workload)/self.processing_power;
        let sleep_time_scaled = ((sleep_time as f64)/GLOBAL_SPEED) as u64;
 
-       println!("[S{}] Tiempo estimado: {}ms (s: {}ms)", self.id, sleep_time, sleep_time_scaled);
+       info!("[S{}] Tiempo estimado: {}ms (s: {}ms)", self.id, sleep_time, sleep_time_scaled);
        thread::sleep(time::Duration::from_millis(sleep_time_scaled));
 
-       println!("[S{}] Procesamiento terminado; devolviendo ACK", self.id);
+       info!("[S{}] Procesamiento terminado; devolviendo ACK a observatorio {}", self.id, message.origin);
 
        // Devolvemos el ACK.
-       let response = Packet::answer_me_at(&tx, 0);
+       let response = Packet::answer_me_at(&tx, 0, self.id);
        message.from.send_through(response);
     }
   }
@@ -229,7 +285,7 @@ impl Client {
   }
 
   fn run(self) {
-    println!("[C{}] Ejecutando cliente {}", self.id, self.id);
+    info!("[C{}] Ejecutando cliente {}", self.id, self.id);
 
     /*
      * Cada cierta cantidad de tiempo, el observatorio genera x cuadrantes.
@@ -253,7 +309,7 @@ impl Client {
     loop {
       let x = self.work_generation_rate;
 
-      println!("[C{}] Generando {} unidades de trabajo", self.id, x);
+      info!("[C{}] Generando {} unidades de trabajo", self.id, x);
 
       // Distribuimos los x cuadrantes generados.
       let mut sid = 0;
@@ -262,19 +318,19 @@ impl Client {
         sid += 1;
 
         let workload = ((x as f64)*(target.weight)) as u64;
-        let packet = Packet::from_iface(&self.host.nic, workload);
+        let packet = Packet::from_iface(&self.host.nic, workload, self.id);
 
-        println!("[C{}] Enviando {} unidades al servidor {}", self.id, workload, sid);
+        info!("[C{}] Enviando {} unidades al servidor {}", self.id, workload, sid);
         target.virtual_link.send_through(packet);
       }
 
       // Esperamos la respuesta de cada servidor.
-      println!("[C{}] Esperando respuestas", self.id);
+      info!("[C{}] Esperando respuestas", self.id);
       for _d in targets {
         let _response = self.host.nic.read();
       }
 
-      println!("[C{}] Todos los servidores terminaron de procesar el bache", self.id);
+      info!("[C{}] Todos los servidores terminaron de procesar el bache", self.id);
 
       /* TODO: Ajustar para dormir hasta completar una cierta cantidad;
        * el tiempo a dormir dependerá del tiempo de respuesta.
@@ -297,6 +353,13 @@ const GLOBAL_SPEED: f64 = 1.0;
 
 fn main() {
 
+  let args : Vec<String> = env::args().collect();
+
+  if args.len() > 1 && args[1] == "--debug" {
+    setup_file_logging().expect("Couldn't set up logger");
+  } else {
+    setup_terminal_logging().expect("Couldn't set up logger");
+  }
   /*
    * Cargamos la configuración. La configuración es un archivo de texto con
    * pares clave-valor. El objeto de configuración puede usarse como
@@ -304,7 +367,7 @@ fn main() {
    *     configuration.get("clave") // retorna el valor asociado a "clave".
    */
 
-  println!("[T0] Cargando configuración");
+  info!("[T0] Cargando configuración");
   let mut configuration = configuration::Configuration::new();
   configuration.load();
 
@@ -312,7 +375,7 @@ fn main() {
   let mut servers: Vec<Server> = Vec::new();
   let mut clients: Vec<Client> = Vec::new();
 
-  println!("[T0] Inicializando servidores");
+  info!("[T0] Inicializando servidores");
   let server_data: Vec<ServerData> = configuration.get_server_dataset();
   let mut server_count = 0;
 
@@ -321,7 +384,7 @@ fn main() {
     servers.push(Server::new(server_count, d));
   }
 
-  println!("[T0] Inicializando clientes");
+  info!("[T0] Inicializando clientes");
   let client_data: Vec<ClientData> = configuration.get_client_dataset();
   let mut client_count = 0;
 
@@ -330,7 +393,7 @@ fn main() {
     clients.push(Client::new(client_count, &servers, c));
   }
 
-  println!("[T0] Lanzando hilos servidores");
+  info!("[T0] Lanzando hilos servidores");
   for server in servers {
     let th = thread::spawn(move || {
       server.run();
@@ -338,7 +401,7 @@ fn main() {
     threads.push(th);
   }
 
-  println!("[T0] Lanzando hilos clientes");
+  info!("[T0] Lanzando hilos clientes");
   for client in clients {
     let th = thread::spawn(move || {
       client.run();
@@ -346,7 +409,7 @@ fn main() {
     threads.push(th);
   }
 
-  println!("[T0] Esperando la finalización del programa");
+  info!("[T0] Esperando la finalización del programa");
   for th in threads {
     th.join().unwrap();
   }
