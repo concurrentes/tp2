@@ -20,6 +20,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time;
 use std::env;
+use std::collections::HashMap;
 
 /*==============================================================================
  * Loggers
@@ -177,6 +178,34 @@ impl NetworkInterface {
  }
 
 /*==============================================================================
+ * Stats
+ *
+ */
+struct Stats {
+  id: u32,
+  samples: u64,
+  total: u64,
+  average: f64
+}
+
+impl Stats {
+  fn new(id : u32, samples: u64, total: u64, average: f64) -> Stats {
+    Stats {
+      id,
+      samples,
+      total,
+      average
+    }
+  }
+
+  fn update_stats(&mut self, new_sample_time: u64) {
+    self.samples += 1;
+    self.total += new_sample_time;
+    self.average = self.total as f64 / self.samples as f64;
+  }
+}
+
+/*==============================================================================
  * Server
  *
  */
@@ -206,6 +235,7 @@ impl Server {
 
     let rx = self.host.nic.r;
     let tx = self.host.nic.s;
+    let mut averages : HashMap<u32, Stats> = HashMap::new();
 
     for message in rx {
 
@@ -236,7 +266,30 @@ impl Server {
        info!("[S{}] Tiempo estimado: {}ms (s: {}ms)", self.id, sleep_time, sleep_time_scaled);
        thread::sleep(time::Duration::from_millis(sleep_time_scaled));
 
+       /*
+        * Actualización de estadísticas para ese observatorio, en caso de que haya enviado workload != 0
+        *
+        */
+       if workload > 0 {
+         if averages.contains_key(&message.origin) {
+           let mut stat = averages.get_mut(&message.origin).unwrap();
+           stat.update_stats(sleep_time);
+         } else {
+           averages.insert(message.origin, Stats::new(message.origin, 1, sleep_time, sleep_time as f64));
+         }
+       }
        info!("[S{}] Procesamiento terminado; devolviendo ACK a observatorio {}", self.id, message.origin);
+
+       /*
+        * Impresión de estadísticas hasta el momento
+        *
+        */
+       let mut stats_string = String::new();
+       for (origin, stat) in &averages {
+         stats_string.push_str(&format!("Observatorio {} = {}, ", origin, stat.average));
+       }
+       let log_stats : String = stats_string.chars().take(stats_string.len() - 2).collect();
+       info!("[S{}] Estadísticas parciales: {}", self.id, log_stats);
 
        // Devolvemos el ACK.
        let response = Packet::answer_me_at(&tx, 0, self.id);
