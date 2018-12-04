@@ -10,7 +10,7 @@
 
 ## Procesos
 
-El programa se divide en dos familias de *threads*: los threads *CLient*, que representan a los observatorios, y los threads *Server*, que representan a los servidores que procesan las imágenes.
+El programa se divide en dos familias de *threads*: los threads *Client*, que representan a los observatorios, y los threads *Server*, que representan a los servidores que procesan las imágenes.
 
 ### Threads *Client* u Observatorios
 
