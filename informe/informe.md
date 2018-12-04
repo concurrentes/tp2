@@ -1,3 +1,4 @@
+![](images/banner_fiuba.png)
 # Segundo Proyecto: ConcuStar
 
 ### Alumnos
