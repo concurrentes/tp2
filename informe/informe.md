@@ -41,7 +41,7 @@ El método `run()` ejecuta en loop infinito las siguientes instrucciones:
 
 ## Esquema y Protocolo de comunicación
 
-![](images/comunicacion.png)
+![](images/protocolo.png)
 
 Para poder comunicar *Clients* (observatorios) y *Servers* (servidores) se hace uso de dos juegos de colas de mensaje. Por un lado, una cola de mensaje por cada servidor, que permite a los observatorios enviar los cuadrantes a procesar a cada servidor. Y por otro, una cola de mensaje por cada observatorio, que permite a los servidores enviar la notificación al observatorio informando que terminó de procesar los cuadrantes correspondientes. Cada cola de mensaje se crea cuando se instancia un objeto de cada clase.
 
