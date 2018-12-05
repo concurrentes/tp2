@@ -5,7 +5,7 @@
 
 |**Nombre**|**Padrón**|
 |:---|:---|
-|*Adrián Barral*||
+|*Adrián Barral*|95137|
 |*Bruno Liberini*|90899|
 
 ## Procesos
