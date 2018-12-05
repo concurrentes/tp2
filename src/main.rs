@@ -1,26 +1,20 @@
 #[macro_use]
 extern crate log;
 extern crate fern;
-/*
-extern crate log;
-extern crate env_logger;
-*/
+
 extern crate chrono;
 extern crate libc;
 
 mod configuration;
 use configuration::ServerData;
 use configuration::ClientData;
-/*
-use log::{Record, Level, Metadata, LevelFilter};
-use env_logger::{Builder};
-*/
 
 use std::sync::mpsc;
 use std::thread;
+
 use std::time;
+use std::time::SystemTime;
 use std::env;
-use std::collections::HashMap;
 
 /*==============================================================================
  * Loggers
@@ -70,6 +64,7 @@ struct Packet {
   from: VirtualLink,
   workload: u64,
   origin: u32,
+  timestamp: SystemTime,
 }
 
 impl Packet {
@@ -79,14 +74,16 @@ impl Packet {
       from: (*iface).get_virtual_link(),
       workload: workload,
       origin: origin,
+      timestamp: SystemTime::now(),
     }
   }
 
-  fn answer_me_at(tx: &mpsc::Sender<Packet>, workload: u64, origin: u32) -> Packet {
+  fn answer_me_at(tx: &mpsc::Sender<Packet>, workload: u64, origin: u32, timestamp: SystemTime) -> Packet {
     Packet {
       from: VirtualLink::linked_to(tx),
       workload: workload,
       origin: origin,
+      timestamp: timestamp,
     }
   }
 
@@ -182,26 +179,28 @@ impl NetworkInterface {
  *
  */
 struct Stats {
-  id: u32,
   samples: u64,
   total: u64,
-  average: f64
 }
 
 impl Stats {
-  fn new(id : u32, samples: u64, total: u64, average: f64) -> Stats {
+  fn new() -> Stats {
     Stats {
-      id,
-      samples,
-      total,
-      average
+      samples: 0,
+      total: 0,
     }
   }
 
   fn update_stats(&mut self, new_sample_time: u64) {
     self.samples += 1;
     self.total += new_sample_time;
-    self.average = self.total as f64 / self.samples as f64;
+  }
+
+  fn get_average(&self) -> f64 {
+    if self.samples == 0 {
+      return 0.0;
+    }
+    (self.total as f64) / (self.samples as f64)
   }
 }
 
@@ -235,7 +234,6 @@ impl Server {
 
     let rx = self.host.nic.r;
     let tx = self.host.nic.s;
-    let mut averages : HashMap<u32, Stats> = HashMap::new();
 
     for message in rx {
 
@@ -266,33 +264,10 @@ impl Server {
        info!("[S{}] Tiempo estimado: {}ms (s: {}ms)", self.id, sleep_time, sleep_time_scaled);
        thread::sleep(time::Duration::from_millis(sleep_time_scaled));
 
-       /*
-        * Actualización de estadísticas para ese observatorio, en caso de que haya enviado workload != 0
-        *
-        */
-       if workload > 0 {
-         if averages.contains_key(&message.origin) {
-           let mut stat = averages.get_mut(&message.origin).unwrap();
-           stat.update_stats(sleep_time);
-         } else {
-           averages.insert(message.origin, Stats::new(message.origin, 1, sleep_time, sleep_time as f64));
-         }
-       }
        info!("[S{}] Procesamiento terminado; devolviendo ACK a observatorio {}", self.id, message.origin);
 
-       /*
-        * Impresión de estadísticas hasta el momento
-        *
-        */
-       let mut stats_string = String::new();
-       for (origin, stat) in &averages {
-         stats_string.push_str(&format!("Observatorio {} = {}, ", origin, stat.average));
-       }
-       let log_stats : String = stats_string.chars().take(stats_string.len() - 2).collect();
-       info!("[S{}] Estadísticas parciales: {}", self.id, log_stats);
-
        // Devolvemos el ACK.
-       let response = Packet::answer_me_at(&tx, 0, self.id);
+       let response = Packet::answer_me_at(&tx, 0, self.id, message.timestamp);
        message.from.send_through(response);
     }
   }
@@ -358,7 +333,7 @@ impl Client {
      */
 
     let targets = &self.distribution_scheme;
-
+    let mut stats : Stats = Stats::new();
     loop {
       let x = self.work_generation_rate;
 
@@ -381,14 +356,17 @@ impl Client {
       info!("[C{}] Esperando respuestas", self.id);
       for _d in targets {
         let _response = self.host.nic.read();
+
+        // Cálculo de tiempo de respuesta
+        let response_time_duration = _response.timestamp.elapsed().unwrap();
+        let response_time_ms = response_time_duration.as_secs() + ((response_time_duration.subsec_millis() * 1000) as u64);
+        stats.update_stats(response_time_ms);
       }
 
+      // Impresión de estadística hasta el momento
+      info!("[C{}] Promedio de respuesta parcial: {} ms", self.id, format!("{:.*}", 2, stats.get_average()));
       info!("[C{}] Todos los servidores terminaron de procesar el bache", self.id);
 
-      /* TODO: Ajustar para dormir hasta completar una cierta cantidad;
-       * el tiempo a dormir dependerá del tiempo de respuesta.
-       *
-       */
       let sleep_time = (3000.0/GLOBAL_SPEED) as u64;
       thread::sleep(time::Duration::from_millis(sleep_time));
 
