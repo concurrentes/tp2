@@ -1,24 +1,19 @@
 #[macro_use]
 extern crate log;
 extern crate fern;
-/*
-extern crate log;
-extern crate env_logger;
-*/
+
 extern crate chrono;
 extern crate libc;
 
 mod configuration;
 use configuration::ServerData;
 use configuration::ClientData;
-/*
-use log::{Record, Level, Metadata, LevelFilter};
-use env_logger::{Builder};
-*/
 
 use std::sync::mpsc;
 use std::thread;
+
 use std::time;
+use std::time::SystemTime;
 use std::env;
 
 /*==============================================================================
@@ -69,6 +64,7 @@ struct Packet {
   from: VirtualLink,
   workload: u64,
   origin: u32,
+  timestamp: SystemTime,
 }
 
 impl Packet {
@@ -78,14 +74,16 @@ impl Packet {
       from: (*iface).get_virtual_link(),
       workload: workload,
       origin: origin,
+      timestamp: SystemTime::now(),
     }
   }
 
-  fn answer_me_at(tx: &mpsc::Sender<Packet>, workload: u64, origin: u32) -> Packet {
+  fn answer_me_at(tx: &mpsc::Sender<Packet>, workload: u64, origin: u32, timestamp: SystemTime) -> Packet {
     Packet {
       from: VirtualLink::linked_to(tx),
       workload: workload,
       origin: origin,
+      timestamp: timestamp,
     }
   }
 
@@ -177,6 +175,36 @@ impl NetworkInterface {
  }
 
 /*==============================================================================
+ * Stats
+ *
+ */
+struct Stats {
+  samples: u64,
+  total: u64,
+}
+
+impl Stats {
+  fn new() -> Stats {
+    Stats {
+      samples: 0,
+      total: 0,
+    }
+  }
+
+  fn update_stats(&mut self, new_sample_time: u64) {
+    self.samples += 1;
+    self.total += new_sample_time;
+  }
+
+  fn get_average(&self) -> f64 {
+    if self.samples == 0 {
+      return 0.0;
+    }
+    (self.total as f64) / (self.samples as f64)
+  }
+}
+
+/*==============================================================================
  * Server
  *
  */
@@ -239,7 +267,7 @@ impl Server {
        info!("[S{}] Procesamiento terminado; devolviendo ACK a observatorio {}", self.id, message.origin);
 
        // Devolvemos el ACK.
-       let response = Packet::answer_me_at(&tx, 0, self.id);
+       let response = Packet::answer_me_at(&tx, 0, self.id, message.timestamp);
        message.from.send_through(response);
     }
   }
@@ -305,7 +333,7 @@ impl Client {
      */
 
     let targets = &self.distribution_scheme;
-
+    let mut stats : Stats = Stats::new();
     loop {
       let x = self.work_generation_rate;
 
@@ -328,14 +356,17 @@ impl Client {
       info!("[C{}] Esperando respuestas", self.id);
       for _d in targets {
         let _response = self.host.nic.read();
+
+        // Cálculo de tiempo de respuesta
+        let response_time_duration = _response.timestamp.elapsed().unwrap();
+        let response_time_ms = response_time_duration.as_secs() + ((response_time_duration.subsec_millis() * 1000) as u64);
+        stats.update_stats(response_time_ms);
       }
 
+      // Impresión de estadística hasta el momento
+      info!("[C{}] Promedio de respuesta parcial: {} ms", self.id, format!("{:.*}", 2, stats.get_average()));
       info!("[C{}] Todos los servidores terminaron de procesar el bache", self.id);
 
-      /* TODO: Ajustar para dormir hasta completar una cierta cantidad;
-       * el tiempo a dormir dependerá del tiempo de respuesta.
-       *
-       */
       let sleep_time = (3000.0/GLOBAL_SPEED) as u64;
       thread::sleep(time::Duration::from_millis(sleep_time));
 
